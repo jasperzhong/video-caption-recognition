@@ -1,10 +1,20 @@
 #include <iostream>
 #include <cv.h>
 #include <opencv2\opencv.hpp>
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
 
 using namespace std;
 using namespace cv;
 
+/*全局*/
+queue<Mat> mat_queue;
+mutex mtx;
+condition_variable cond;
+int frame_num;
+int ok = 1;
 /*
  * 图像增强，将灰度映射到一个范围
  */
@@ -28,23 +38,21 @@ void Imadjust(Mat& inout,
 /*
  * 提取视频中的帧，20帧保存一张
  */
-int VedioFrameExtraction(VideoCapture& capture, const string& picture_path) {
-	int frame_num = capture.get(CV_CAP_PROP_FRAME_COUNT);
+void VedioFrameExtraction(VideoCapture& capture) {
+	frame_num = capture.get(CV_CAP_PROP_FRAME_COUNT);
 	Mat frame;
 	int cur_frame = 0;
-	cout << "开始读视频帧.每20帧写入一张." << endl;
-	while (true) {
-		capture.read(frame);
+	bool on = true;
+	while (on) {
+		on = capture.read(frame);
 		if (cur_frame % 20 == 0) {
-			cout << "正在写入第" << cur_frame << "帧" << endl;
-			imwrite(picture_path + to_string(cur_frame) + ".png", frame);
+			std::lock_guard<std::mutex> lck(mtx);
+			mat_queue.push(frame);
+			cond.notify_one();
 		}
-		if (cur_frame >= frame_num)
-			break;
 		++cur_frame;
 	}
-	cout << "读取已完成." << endl;
-	return frame_num / 20 + 1;
+	ok = 0;
 }
 
 /*
@@ -138,27 +146,35 @@ double SubtitleSimilarity(const Mat& a, const Mat& b) {
 /*
  * 字幕提取,假设每张图片的尺寸相同
  */
-void SubtitleExtraction(const string& picture_path, const string& save_path, int frame_num) {
+void SubtitleExtraction(const string save_path) {
 	Mat input_img;
 	bool has_caption;
 	int row, col;
-	double cosine;
-	input_img = imread(picture_path + to_string(0 * 20) + ".png");
+	double cosine; 
+
+	unique_lock<mutex> lck(mtx);
+	cond.wait(lck, [] {return mat_queue.size() != 0; });
+	input_img = mat_queue.front();
+	mat_queue.pop();
 	row = input_img.rows;
 	col = input_img.cols;
 	/*初始化*/
 	Mat output_img(Size(col,row/4),CV_8U), pre_img(Size(col, row / 4), CV_8U);
 
 	/*处理每张图片*/
-	for (int i = 0; i < frame_num; ++i) {
-		input_img = imread(picture_path + to_string(i * 20) + ".png");
+	int i = 0;
+	while(ok) {
+		cond.wait(lck, [] {return mat_queue.size() != 0; });
+		input_img = mat_queue.front();
+		mat_queue.pop();
 		input_img = input_img.rowRange(row * 3 / 4, row);
 		has_caption = SubtitleLocating(input_img, output_img);
 		
 		if (has_caption) {
 			cosine = SubtitleSimilarity(pre_img, output_img);
 			if (cosine < 0.5) {
-				imwrite(save_path + to_string(i * 20) + ".png", output_img);
+				cout << "save" << i << endl;
+				imwrite(save_path + to_string(i++) + ".png", output_img);
 				pre_img = output_img.clone();
 			}
 		}
@@ -168,13 +184,24 @@ void SubtitleExtraction(const string& picture_path, const string& save_path, int
 /* argv是视频的路径*/
 int main(int argc, char** argv)
 {
-	string picture_path = "D:\\Pictures\\";
-	string save_path = "D:\\Pictures\\captions\\";
+	if (argc != 3) {
+		cerr << "Wrong Command." << endl;
+		cout << "the format is: $ ./run.exe  your_vedio_path  subtitle_save_path" << endl;
+		exit(EXIT_FAILURE);
+	}
 
 	VideoCapture capture(argv[1]);
-	int frame_num = VedioFrameExtraction(capture, picture_path);
-	SubtitleExtraction(picture_path, save_path, frame_num);
+	if (!capture.isOpened()) {
+		cerr << "Cannot open the vedio." << endl;
+		exit(EXIT_FAILURE);
+	}
+	thread produce(VedioFrameExtraction, std::ref(capture));
+	thread comsume(SubtitleExtraction, argv[2]);
 
+	produce.join();
+	comsume.join();
+
+	cout << "Done." << endl;
 	system("pause");
 	return 0;
 }
