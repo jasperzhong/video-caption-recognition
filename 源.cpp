@@ -1,7 +1,6 @@
 #include <iostream>
 #include <cv.h>
 #include <opencv2\opencv.hpp>
-#include <cmath>
 
 using namespace std;
 using namespace cv;
@@ -24,14 +23,12 @@ void Imadjust(Mat& inout,
 			inout.at<uchar>(y, x) = (uchar)val;
 		}
 	}
-	
-
 }
 
 /*
  * 提取视频中的帧，20帧保存一张
  */
-void VedioFrameExtraction(VideoCapture& capture) {
+void VedioFrameExtraction(VideoCapture& capture, const string& picture_path) {
 	int frame_num = capture.get(CV_CAP_PROP_FRAME_COUNT);
 	Mat frame;
 	int cur_frame = 0;
@@ -40,7 +37,7 @@ void VedioFrameExtraction(VideoCapture& capture) {
 		capture.read(frame);
 		if (cur_frame % 20 == 0) {
 			cout << "正在写入第" << cur_frame << "帧" << endl;
-			imwrite("D:\\Pictures\\" + to_string(cur_frame) + ".png", frame);
+			imwrite(picture_path + to_string(cur_frame) + ".png", frame);
 		}
 		if (cur_frame >= frame_num)
 			break;
@@ -53,43 +50,41 @@ void VedioFrameExtraction(VideoCapture& capture) {
  * 输入图片，如果存在字幕，返回true，同时把处理后的图片传入outputImg
  * 如果不存在字幕，返回false
  */
-bool SubtitleExtraction(const Mat& inputImg, Mat& outputImg) {
-	Mat dst_img, temp, show;
-	/*灰度化*/
-	cvtColor(inputImg, temp, CV_RGB2GRAY);
+bool SubtitleLocating(Mat& input_img, Mat& output_img) {
+	Mat temp;
+	/*灰度化*/ 
+	cvtColor(input_img, temp, CV_RGB2GRAY);     
 	Imadjust(temp, 50, 200, 0, 255, 1);
 
 	/*形态学开操作*/
 	Mat ele = getStructuringElement(MORPH_ELLIPSE, Size(12, 12));
-	morphologyEx(temp, dst_img, MORPH_OPEN, ele);
+	morphologyEx(temp, output_img, MORPH_OPEN, ele);
 	/*差分*/
-	dst_img = temp - dst_img;
-
-	/*切割*/
-	dst_img = dst_img.rowRange(dst_img.rows * 3 / 4, dst_img.rows);
+	output_img = temp - output_img;
 	/*二值化*/
-	threshold(dst_img, show, 230, 255, THRESH_BINARY);
+	threshold(output_img, output_img, 230, 255, THRESH_BINARY);
+	temp = output_img.clone();	
 	
 	/*形态学操作，使字幕区域连通*/
 	ele = getStructuringElement(MORPH_ELLIPSE, Size(2, 2));
-	morphologyEx(show, dst_img, MORPH_OPEN, ele);
-	morphologyEx(dst_img, dst_img, MORPH_CLOSE, ele);
+	morphologyEx(output_img, output_img, MORPH_OPEN, ele);
+	morphologyEx(output_img, output_img, MORPH_CLOSE, ele);
 
 	ele = getStructuringElement(MORPH_ELLIPSE, Size(1, 150));
-	morphologyEx(dst_img, dst_img, MORPH_CLOSE, ele);
+	morphologyEx(output_img, output_img, MORPH_CLOSE, ele);
 	ele = getStructuringElement(MORPH_ELLIPSE, Size(30, 5));
-	morphologyEx(dst_img, dst_img, MORPH_CLOSE, ele);
+	morphologyEx(output_img, output_img, MORPH_CLOSE, ele);
 
 	/*二值化*/
-	threshold(dst_img, dst_img, 200, 255, THRESH_BINARY);
+	threshold(output_img, output_img, 200, 255, THRESH_BINARY);
 	/*形态学闭操作，去掉一些尖刺*/
 	ele = getStructuringElement(MORPH_ELLIPSE, Size(4, 4));
-	morphologyEx(dst_img, dst_img, MORPH_OPEN, ele);
+	morphologyEx(output_img, output_img, MORPH_OPEN, ele);
 
 	bool has_caption = false;
 	vector<vector<Point>> contours;
 	/*提取出连通区域*/
-	findContours(dst_img, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
+	findContours(output_img, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
 	int size = contours.size();
 	int width, height, x, y;
 	vector<Rect> boundRect(size);
@@ -106,45 +101,79 @@ bool SubtitleExtraction(const Mat& inputImg, Mat& outputImg) {
 		/*防止越界*/
 		if (y < 0)
 			y = 0;
-		if (y + height > dst_img.rows)
+		if (y + height > output_img.rows)
 			height -= 10;
 		if (x < 0)
 			x = 0;
-		if (x + width > dst_img.cols)
+		if (x + width > output_img.cols)
 			width -= 20;
 
 		/*字幕存在条件*/
-		if (abs(x + width / 2 - dst_img.cols / 2) < 50 && abs(dst_img.rows - y - height) < 30 && width*height >= 4000) {
+		if (abs(x + width / 2 - output_img.cols / 2) < 50 && abs(output_img.rows - y - height) < 30 && width*height >= 4000) {
 			has_caption = true;
-			cout << width*height << endl;
-			show(Rect(x, y, width, height)).copyTo(dst_img(Rect(x, y, width, height)));
+			temp(Rect(x, y, width, height)).copyTo(output_img(Rect(x, y, width, height)));
 		}
 		else {
 			/*不存在字幕的区块涂成黑色*/
-			dst_img(Rect(x, y, width, height)) = 0;
+			output_img(Rect(x, y, width, height)) = 0;
 		}
 	}
 
-	/*将处理后的图片传给outputImg*/
-	dst_img.copyTo(outputImg);
 	return has_caption;
 }
 
 
+/*
+ * 计算两张字幕图片的余弦相似度，如果结果大于0.5，那么认为是字幕相同
+ * 反之认为字幕不同
+ */
+double SubtitleSimilarity(const Mat& a, const Mat& b) {
+	double dot = a.dot(b);
+	double norm1 = norm(a, CV_L2);
+	double norm2 = norm(b, CV_L2);
+	return dot / norm1 / norm2;
+}
+
+/*
+ * 字幕提取,假设每张图片的尺寸相同
+ */
+void SubtitleExtraction(const string& picture_path, const string& save_path) {
+	Mat input_img;
+	bool has_caption;
+	int row, col;
+	double cosine;
+	input_img = imread(picture_path + to_string(0 * 20) + ".png");
+	row = input_img.rows;
+	col = input_img.cols;
+	/*初始化*/
+	Mat output_img(Size(col,row/4),CV_8U), pre_img(Size(col, row / 4), CV_8U);
+
+	/*处理每张图片*/
+	for (int i = 0; i < 1500; ++i) {
+		input_img = imread(picture_path + to_string(i * 20) + ".png");
+		input_img = input_img.rowRange(row * 3 / 4, row);
+		has_caption = SubtitleLocating(input_img, output_img);
+		
+		if (has_caption) {
+			cosine = SubtitleSimilarity(pre_img, output_img);
+			if (cosine < 0.5) {
+				imwrite(save_path + to_string(i * 20) + ".png", output_img);
+				pre_img = output_img.clone();
+			}
+		}
+	}
+}
+
+/* argv是视频的路径*/
 int main(int argc, char** argv)
 {
-	//VideoCapture capture(argv[1]);
-	Mat img, dst_img;
-	bool has_caption;
-	
-	for (int i = 0; i < 1500; ++i) {
-		img = imread("D:\\Pictures\\" + to_string(i * 20) + ".png");
-		has_caption = SubtitleExtraction(img, dst_img);
-		cout << i * 20 << endl;
-		if(has_caption)
-			imwrite("D:\\Pictures\\captions\\" + to_string(i * 20) + ".png", dst_img);
-	}
-	
+	string picture_path = "D:\\Pictures\\";
+	string save_path = "D:\\Pictures\\captions\\";
+
+	VideoCapture capture(argv[1]);
+	VedioFrameExtraction(capture, picture_path);
+	SubtitleExtraction(picture_path, save_path);
+
 	system("pause");
 	return 0;
 }
