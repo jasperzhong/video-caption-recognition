@@ -28,7 +28,7 @@ void Imadjust(Mat& inout,
 /*
  * 提取视频中的帧，20帧保存一张
  */
-void VedioFrameExtraction(VideoCapture& capture, const string& picture_path) {
+int VedioFrameExtraction(VideoCapture& capture, const string& picture_path) {
 	int frame_num = capture.get(CV_CAP_PROP_FRAME_COUNT);
 	Mat frame;
 	int cur_frame = 0;
@@ -44,6 +44,7 @@ void VedioFrameExtraction(VideoCapture& capture, const string& picture_path) {
 		++cur_frame;
 	}
 	cout << "读取已完成." << endl;
+	return frame_num / 20 + 1;
 }
 
 /*
@@ -137,7 +138,7 @@ double SubtitleSimilarity(const Mat& a, const Mat& b) {
 /*
  * 字幕提取,假设每张图片的尺寸相同
  */
-void SubtitleExtraction(const string& picture_path, const string& save_path) {
+void SubtitleExtraction(const string& picture_path, const string& save_path, int frame_num) {
 	Mat input_img;
 	bool has_caption;
 	int row, col;
@@ -149,7 +150,7 @@ void SubtitleExtraction(const string& picture_path, const string& save_path) {
 	Mat output_img(Size(col,row/4),CV_8U), pre_img(Size(col, row / 4), CV_8U);
 
 	/*处理每张图片*/
-	for (int i = 0; i < 1500; ++i) {
+	for (int i = 0; i < frame_num; ++i) {
 		input_img = imread(picture_path + to_string(i * 20) + ".png");
 		input_img = input_img.rowRange(row * 3 / 4, row);
 		has_caption = SubtitleLocating(input_img, output_img);
@@ -171,8 +172,8 @@ int main(int argc, char** argv)
 	string save_path = "D:\\Pictures\\captions\\";
 
 	VideoCapture capture(argv[1]);
-	VedioFrameExtraction(capture, picture_path);
-	SubtitleExtraction(picture_path, save_path);
+	int frame_num = VedioFrameExtraction(capture, picture_path);
+	SubtitleExtraction(picture_path, save_path, frame_num);
 
 	system("pause");
 	return 0;
