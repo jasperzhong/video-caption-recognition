@@ -14,7 +14,7 @@ queue<Mat> mat_queue;
 mutex mtx;
 condition_variable cond;
 int frame_num;
-int ok = 1;
+volatile int ok = 1;
 /*
  * 图像增强，将灰度映射到一个范围
  */
@@ -53,6 +53,7 @@ void VedioFrameExtraction(VideoCapture& capture) {
 		++cur_frame;
 	}
 	ok = 0;
+	cond.notify_one();
 }
 
 /*
@@ -153,7 +154,10 @@ void SubtitleExtraction(const string save_path) {
 	double cosine; 
 
 	unique_lock<mutex> lck(mtx);
-	cond.wait(lck, [] {return mat_queue.size() != 0; });
+	cond.wait(lck, [] {return mat_queue.size() != 0 || !ok; });
+	if (!ok) {
+		return;
+	}
 	input_img = mat_queue.front();
 	mat_queue.pop();
 	row = input_img.rows;
@@ -163,8 +167,8 @@ void SubtitleExtraction(const string save_path) {
 
 	/*处理每张图片*/
 	int i = 0;
+	cond.wait(lck, [] {return mat_queue.size() != 0 || !ok; });
 	while(ok) {
-		cond.wait(lck, [] {return mat_queue.size() != 0; });
 		input_img = mat_queue.front();
 		mat_queue.pop();
 		input_img = input_img.rowRange(row * 3 / 4, row);
@@ -178,12 +182,14 @@ void SubtitleExtraction(const string save_path) {
 				pre_img = output_img.clone();
 			}
 		}
+		cond.wait(lck, [] {return mat_queue.size() != 0 || !ok; });
 	}
 }
 
-/* argv是视频的路径*/
+/* argv是视频的路径和保存位置路径*/
 int main(int argc, char** argv)
 {
+	
 	if (argc != 3) {
 		cerr << "Wrong Command." << endl;
 		cout << "the format is: $ ./run.exe  your_vedio_path  subtitle_save_path" << endl;
