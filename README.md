@@ -1,10 +1,10 @@
-# vedio-subtitle-recognition
+# video-subtitle-recognition
 Based on OpenCV
 
 # Usage
 Windows
 
-$ ./run.exe your_vedio_path subtitle_save_path
+$ ./run.exe your_video_path subtitle_save_path
 
 
 # Performance
